@@ -67,6 +67,86 @@ This split is intentional so you can pipe JSON cleanly:
 
 See [JSON_SCHEMA.md](JSON_SCHEMA.md) for exhaustive field documentation and interpretation notes.
 
+## Local HTTP API
+
+`server.py` exposes a thin HTTP wrapper around the local DSP engine. This contract is intentionally generic so multiple UI clients can consume it.
+
+### `POST /api/analyze/estimate`
+
+Multipart form fields:
+- `track` (required file)
+- `dsp_json_override` (optional string; currently ignored by the backend wrapper)
+
+Query params:
+- `separate=true` or `--separate=true` to include Demucs in the backend estimate
+
+Response shape:
+
+```json
+{
+  "requestId": "req_001",
+  "estimate": {
+    "durationSeconds": 214.6,
+    "totalLowMs": 22000,
+    "totalHighMs": 38000,
+    "stages": [
+      {
+        "key": "local_dsp",
+        "label": "Local DSP analysis",
+        "lowMs": 22000,
+        "highMs": 38000
+      }
+    ]
+  }
+}
+```
+
+### `POST /api/analyze`
+
+Multipart form fields:
+- `track` (required file)
+- `dsp_json_override` (optional string; currently ignored by the backend wrapper)
+
+Response shape on success:
+
+```json
+{
+  "requestId": "req_002",
+  "phase1": {
+    "...": "same payload returned by analyze.py after server-side normalization"
+  },
+  "diagnostics": {
+    "backendDurationMs": 31842.14,
+    "engineVersion": "analyze.py",
+    "estimatedLowMs": 22000,
+    "estimatedHighMs": 38000,
+    "timeoutSeconds": 53
+  }
+}
+```
+
+Response shape on handled backend failure:
+
+```json
+{
+  "requestId": "req_003",
+  "error": {
+    "code": "ANALYZER_TIMEOUT",
+    "message": "Local DSP analysis timed out before completion.",
+    "phase": "phase1_local_dsp",
+    "retryable": true
+  },
+  "diagnostics": {
+    "backendDurationMs": 53001.2,
+    "timeoutSeconds": 53,
+    "estimatedLowMs": 22000,
+    "estimatedHighMs": 38000,
+    "stdoutSnippet": "partial stdout",
+    "stderrSnippet": "partial stderr"
+  }
+}
+```
+
 ## Quick Example (Real Output — Vtss, Can't Catch Me)
 
 - `bpm`: `144.3` (Percival cross-check: `144.6`, agreement: `true`)

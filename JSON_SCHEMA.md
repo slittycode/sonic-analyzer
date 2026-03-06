@@ -188,6 +188,36 @@ Type: `object \| null`
 
 ---
 
+### `transcriptionDetail`
+
+Type: `object \| null`
+
+| Field | Type | Description | Units / Scale | LLM interpretation note |
+|---|---|---|---|---|
+| `transcriptionDetail.transcriptionMethod` | `string` | Note transcription backend used for this pass. | categorical | Currently always `basic-pitch`; useful if more transcription backends are added later. |
+| `transcriptionDetail.noteCount` | `int` | Total number of note events after merging all transcribed sources. | count | Higher counts imply denser monophonic note content captured by Basic Pitch. |
+| `transcriptionDetail.averageConfidence` | `float` | Mean confidence across all merged note events. | 0.0-1.0 | Lower values indicate noisier or more ambiguous pitch tracking. |
+| `transcriptionDetail.dominantPitches` | `array<object>` | Top 5 most frequent detected pitches. | list of pitch summary objects | Quick tonal summary for bassline and hook reconstruction. |
+| `transcriptionDetail.dominantPitches[].pitchMidi` | `int` | MIDI pitch number for the dominant pitch entry. | 0-127 | Directly usable for DAW note entry or tonal analysis. |
+| `transcriptionDetail.dominantPitches[].pitchName` | `string` | Note name for the dominant pitch entry. | note label | Human-readable pitch label for prompts and reports. |
+| `transcriptionDetail.dominantPitches[].count` | `int` | Number of note events using that pitch. | count | Helps distinguish tonic-like repetition from incidental notes. |
+| `transcriptionDetail.pitchRange` | `object` | Aggregate min/max pitch across merged note events. | object | Fast register summary for the transcribed sources. |
+| `transcriptionDetail.pitchRange.minMidi` | `int \| null` | Lowest detected MIDI pitch. | MIDI note number | Lower register bound of the combined transcription. |
+| `transcriptionDetail.pitchRange.maxMidi` | `int \| null` | Highest detected MIDI pitch. | MIDI note number | Upper register bound of the combined transcription. |
+| `transcriptionDetail.pitchRange.minName` | `string \| null` | Note name of the lowest detected pitch. | note label | Human-readable lower pitch bound. |
+| `transcriptionDetail.pitchRange.maxName` | `string \| null` | Note name of the highest detected pitch. | note label | Human-readable upper pitch bound. |
+| `transcriptionDetail.stemSeparationUsed` | `bool` | Whether transcription ran on separated Demucs stems instead of the full mix. | boolean | `true` means the merged result came from one or more stems such as `bass` and `other`. |
+| `transcriptionDetail.stemsTranscribed` | `string[]` | Ordered list of audio sources transcribed for this result. | source labels | Use to distinguish full-mix fallback from stem-based transcription. |
+| `transcriptionDetail.notes` | `array<object>` | Merged note events sorted by onset time. | list of note objects | Combined note timeline from stem-based or full-mix transcription. |
+| `transcriptionDetail.notes[].pitchMidi` | `int` | MIDI note number for the event. | 0-127 | Directly usable in piano-roll or MIDI regeneration workflows. |
+| `transcriptionDetail.notes[].pitchName` | `string` | Note name for the event. | note label | Human-readable pitch name for summaries and prompts. |
+| `transcriptionDetail.notes[].onsetSeconds` | `float` | Note onset time. | seconds | Place note start accurately in arrangement timeline. |
+| `transcriptionDetail.notes[].durationSeconds` | `float` | Note duration. | seconds | Approximate note gate length for MIDI reconstruction. |
+| `transcriptionDetail.notes[].confidence` | `float` | Confidence score for the event. | 0.0-1.0 | Use as a weighting signal when filtering or trusting note detections. |
+| `transcriptionDetail.notes[].stemSource` | `"bass" \| "other" \| "full_mix"` | Source audio used to detect that note event. | categorical | Lets downstream tooling separate bass-derived notes from residual or fallback detections. |
+
+---
+
 ## Harmony
 
 ### `chordDetail`

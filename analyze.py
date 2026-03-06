@@ -6,7 +6,7 @@ Takes an audio file, runs it through Essentia's algorithms,
 and prints a clean JSON result to stdout.
 
 Usage:
-    ./venv/bin/python analyze.py "path/to/track.mp3" [--separate] [--fast]
+    ./venv/bin/python analyze.py "path/to/track.mp3" [--separate] [--fast] [--transcribe] [--yes]
 """
 
 import json
@@ -16,6 +16,7 @@ import sys
 import tempfile
 import warnings
 import wave
+import contextlib
 from collections import Counter
 
 import numpy as np
@@ -62,7 +63,7 @@ def _write_wav_pcm16(path: str, audio: np.ndarray, sample_rate: int) -> None:
 
 
 def separate_stems(audio_path: str, output_dir: str | None = None):
-    """Run Demucs two-stem separation and return paths for 'other' and 'drums'."""
+    """Run Demucs separation and return written source stem paths."""
     try:
         import torch
         from demucs.apply import apply_model
@@ -102,23 +103,17 @@ def separate_stems(audio_path: str, output_dir: str | None = None):
         )[0]
 
         source_names = list(model.sources)
-        if "drums" not in source_names:
-            raise RuntimeError("Demucs output does not contain a drums source")
+        if len(source_names) == 0:
+            raise RuntimeError("Demucs output does not contain any sources")
 
-        drums_idx = source_names.index("drums")
-        drums = sources[drums_idx].detach().cpu().numpy()
+        stem_paths = {}
+        for idx, source_name in enumerate(source_names):
+            stem_audio = sources[idx].detach().cpu().numpy()
+            stem_path = os.path.join(output_dir, f"{source_name}.wav")
+            _write_wav_pcm16(stem_path, stem_audio, int(model.samplerate))
+            stem_paths[source_name] = stem_path
 
-        other_indices = [i for i, name in enumerate(source_names) if name != "drums"]
-        if len(other_indices) == 0:
-            other = np.zeros_like(drums)
-        else:
-            other = sources[other_indices].sum(dim=0).detach().cpu().numpy()
-
-        drums_path = os.path.join(output_dir, "drums.wav")
-        other_path = os.path.join(output_dir, "other.wav")
-        _write_wav_pcm16(drums_path, drums, int(model.samplerate))
-        _write_wav_pcm16(other_path, other, int(model.samplerate))
-        return {"other": other_path, "drums": drums_path}
+        return stem_paths if len(stem_paths) > 0 else None
     except Exception:
         if temp_dir_created:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -131,8 +126,7 @@ def cleanup_stems(stems: dict | None) -> None:
         return
     try:
         stem_paths = []
-        for key in ("other", "drums"):
-            path = stems.get(key)
+        for path in stems.values():
             if isinstance(path, str) and path:
                 stem_paths.append(path)
 
@@ -147,6 +141,140 @@ def cleanup_stems(stems: dict | None) -> None:
                 shutil.rmtree(parent, ignore_errors=True)
     except Exception:
         pass
+
+
+def _format_duration_label(seconds: float) -> str:
+    total_seconds = max(0, int(round(float(seconds))))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    if minutes > 0:
+        return f"{minutes}m {remaining_seconds}s"
+    return f"{remaining_seconds}s"
+
+
+def _estimate_stage_seconds(
+    duration_seconds: float,
+    min_ratio: float,
+    max_ratio: float,
+    min_overhead: float,
+    max_overhead: float,
+) -> dict:
+    safe_duration = max(0.0, float(duration_seconds))
+    stage_min = max(min_overhead, safe_duration * min_ratio)
+    stage_max = max(max_overhead, safe_duration * max_ratio)
+    if stage_max < stage_min:
+        stage_max = stage_min
+    return {
+        "min": int(round(stage_min)),
+        "max": int(round(stage_max)),
+    }
+
+
+def get_audio_duration_seconds(audio_path: str) -> float | None:
+    try:
+        reader = es.MetadataReader(filename=audio_path)
+        metadata = dict(zip(reader.outputNames(), reader()))
+        duration_seconds = metadata.get("duration")
+        if duration_seconds is None:
+            return None
+        duration_value = float(duration_seconds)
+        return duration_value if np.isfinite(duration_value) and duration_value > 0 else None
+    except Exception:
+        return None
+
+
+def build_analysis_estimate(
+    duration_seconds: float,
+    run_separation: bool,
+    run_transcribe: bool,
+) -> dict:
+    stages = []
+
+    dsp_seconds = _estimate_stage_seconds(duration_seconds, 0.06, 0.14, 20.0, 45.0)
+    stages.append(
+        {
+            "key": "dsp",
+            "label": "DSP analysis",
+            "seconds": dsp_seconds,
+        }
+    )
+
+    if run_separation:
+        separation_seconds = _estimate_stage_seconds(duration_seconds, 0.16, 0.32, 45.0, 90.0)
+        stages.append(
+            {
+                "key": "separation",
+                "label": "Demucs separation",
+                "seconds": separation_seconds,
+            }
+        )
+
+    if run_transcribe:
+        transcription_key = "transcription_stems" if run_separation else "transcription_full_mix"
+        transcription_label = "Basic Pitch on bass + other stems" if run_separation else "Basic Pitch on full mix"
+        transcription_seconds = (
+            _estimate_stage_seconds(duration_seconds, 0.22, 0.42, 60.0, 150.0)
+            if run_separation
+            else _estimate_stage_seconds(duration_seconds, 0.10, 0.22, 25.0, 75.0)
+        )
+        stages.append(
+            {
+                "key": transcription_key,
+                "label": transcription_label,
+                "seconds": transcription_seconds,
+            }
+        )
+
+    total_min = sum(stage["seconds"]["min"] for stage in stages)
+    total_max = sum(stage["seconds"]["max"] for stage in stages)
+
+    return {
+        "durationSeconds": round(float(duration_seconds), 1),
+        "stages": stages,
+        "totalSeconds": {
+            "min": total_min,
+            "max": total_max,
+        },
+    }
+
+
+def print_analysis_estimate(audio_path: str, estimate: dict) -> None:
+    print(
+        f"Estimated analysis time for {os.path.basename(audio_path)}: "
+        f"{_format_duration_label(estimate['totalSeconds']['min'])}-"
+        f"{_format_duration_label(estimate['totalSeconds']['max'])}",
+        file=sys.stderr,
+    )
+    for stage in estimate.get("stages", []):
+        seconds = stage.get("seconds", {})
+        print(
+            f"- {stage.get('label')}: "
+            f"{_format_duration_label(seconds.get('min', 0))}-"
+            f"{_format_duration_label(seconds.get('max', 0))}",
+            file=sys.stderr,
+        )
+
+
+def should_prompt_for_confirmation(is_tty: bool, auto_yes: bool) -> bool:
+    return bool(is_tty) and not auto_yes
+
+
+def prompt_to_continue() -> bool:
+    try:
+        response = input("Continue? [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
+def midi_to_note_name(midi_num: int) -> str:
+    names = ['C', 'C#', 'D', 'D#', 'E', 'F',
+             'F#', 'G', 'G#', 'A', 'A#', 'B']
+    octave = (midi_num // 12) - 1
+    name = names[midi_num % 12]
+    return f"{name}{octave}"
 
 
 def _safe_db(value: float) -> float:
@@ -2231,12 +2359,239 @@ def analyze_chords(mono: np.ndarray, sample_rate: int = 44100) -> dict:
         return {"chordDetail": None}
 
 
+def _to_finite_float(value, default=None):
+    try:
+        numeric = float(value)
+    except Exception:
+        return default
+    return numeric if np.isfinite(numeric) else default
+
+
+def _normalize_confidence(value) -> float:
+    numeric = _to_finite_float(value, 1.0)
+    if numeric is None:
+        numeric = 1.0
+    return round(float(np.clip(numeric, 0.0, 1.0)), 4)
+
+
+def _transcription_source_paths(audio_path: str, stem_paths: dict | None = None) -> list[tuple[str, str]]:
+    sources = []
+    if isinstance(stem_paths, dict):
+        for stem_name in ("bass", "other"):
+            source_path = stem_paths.get(stem_name)
+            if isinstance(source_path, str) and os.path.isfile(source_path):
+                sources.append((stem_name, source_path))
+    if len(sources) == 0:
+        return [("full_mix", audio_path)]
+    return sources
+
+
+def _extract_basic_pitch_notes(
+    source_path: str,
+    stem_source: str,
+    predict,
+    model_path,
+) -> tuple[list[dict], list[int], list[float]]:
+    with contextlib.redirect_stdout(sys.stderr):
+        _model_output, _midi_data, raw_note_events = predict(source_path, model_path)
+
+    notes = []
+    midi_values = []
+    confidence_values = []
+
+    for raw_event in raw_note_events or []:
+        pitch_raw = None
+        onset_raw = None
+        duration_raw = None
+        end_raw = None
+        confidence_raw = None
+
+        if isinstance(raw_event, dict):
+            pitch_raw = raw_event.get(
+                "pitchMidi",
+                raw_event.get("pitch_midi", raw_event.get("pitch", raw_event.get("midi", raw_event.get("note")))),
+            )
+            onset_raw = raw_event.get(
+                "onsetSeconds",
+                raw_event.get(
+                    "onset_seconds",
+                    raw_event.get("onset", raw_event.get("startSeconds", raw_event.get("start_seconds", raw_event.get("start")))),
+                ),
+            )
+            duration_raw = raw_event.get(
+                "durationSeconds",
+                raw_event.get("duration_seconds", raw_event.get("duration")),
+            )
+            end_raw = raw_event.get(
+                "offsetSeconds",
+                raw_event.get(
+                    "offset_seconds",
+                    raw_event.get("offset", raw_event.get("endSeconds", raw_event.get("end_seconds", raw_event.get("end")))),
+                ),
+            )
+            confidence_raw = raw_event.get(
+                "confidence",
+                raw_event.get("amplitude", raw_event.get("velocity", raw_event.get("probability"))),
+            )
+        elif isinstance(raw_event, (tuple, list)):
+            if len(raw_event) >= 3:
+                onset_raw = raw_event[0]
+                duration_raw = raw_event[1]
+                pitch_raw = raw_event[2]
+            if len(raw_event) >= 4:
+                confidence_raw = raw_event[3]
+        else:
+            pitch_raw = getattr(raw_event, "pitchMidi", None)
+            if pitch_raw is None:
+                pitch_raw = getattr(raw_event, "pitch_midi", None)
+            if pitch_raw is None:
+                pitch_raw = getattr(raw_event, "pitch", None)
+            onset_raw = (
+                getattr(raw_event, "onsetSeconds", None)
+                or getattr(raw_event, "onset_seconds", None)
+                or getattr(raw_event, "onset", None)
+                or getattr(raw_event, "start", None)
+            )
+            duration_raw = (
+                getattr(raw_event, "durationSeconds", None)
+                or getattr(raw_event, "duration_seconds", None)
+                or getattr(raw_event, "duration", None)
+            )
+            end_raw = (
+                getattr(raw_event, "offsetSeconds", None)
+                or getattr(raw_event, "offset_seconds", None)
+                or getattr(raw_event, "offset", None)
+                or getattr(raw_event, "end", None)
+            )
+            confidence_raw = (
+                getattr(raw_event, "confidence", None)
+                or getattr(raw_event, "amplitude", None)
+                or getattr(raw_event, "velocity", None)
+            )
+
+        onset_seconds = _to_finite_float(onset_raw, None)
+        second_value = _to_finite_float(duration_raw, None)
+        duration_seconds = None
+        if onset_seconds is not None and second_value is not None:
+            duration_seconds = second_value - onset_seconds if second_value >= onset_seconds else second_value
+        if (duration_seconds is None or duration_seconds <= 0) and onset_seconds is not None and end_raw is not None:
+            end_seconds = _to_finite_float(end_raw, None)
+            if end_seconds is not None:
+                duration_seconds = end_seconds - onset_seconds
+
+        pitch_midi = _to_finite_float(pitch_raw, None)
+        if pitch_midi is None or onset_seconds is None or duration_seconds is None:
+            continue
+        if onset_seconds < 0 or duration_seconds <= 0:
+            continue
+
+        pitch_midi_int = int(np.clip(int(round(pitch_midi)), 0, 127))
+        confidence = _normalize_confidence(confidence_raw)
+
+        note_obj = {
+            "pitchMidi": pitch_midi_int,
+            "pitchName": midi_to_note_name(pitch_midi_int),
+            "onsetSeconds": round(float(onset_seconds), 4),
+            "durationSeconds": round(float(duration_seconds), 4),
+            "confidence": confidence,
+            "stemSource": stem_source,
+        }
+        notes.append(note_obj)
+        midi_values.append(pitch_midi_int)
+        confidence_values.append(confidence)
+
+    return notes, midi_values, confidence_values
+
+
+def analyze_transcription_basic_pitch(audio_path: str, stem_paths: dict | None = None) -> dict:
+    try:
+        from basic_pitch.inference import predict
+        from basic_pitch import ICASSP_2022_MODEL_PATH
+    except Exception as e:
+        print(f"[warn] Basic Pitch import failed: {e}", file=sys.stderr)
+        return {"transcriptionDetail": None}
+
+    try:
+        transcription_sources = _transcription_source_paths(audio_path, stem_paths)
+        notes = []
+        midi_values = []
+        confidence_values = []
+        stems_transcribed = [stem_source for stem_source, _source_path in transcription_sources]
+
+        for stem_source, source_path in transcription_sources:
+            source_notes, source_midi_values, source_confidence_values = _extract_basic_pitch_notes(
+                source_path,
+                stem_source,
+                predict,
+                ICASSP_2022_MODEL_PATH,
+            )
+            notes.extend(source_notes)
+            midi_values.extend(source_midi_values)
+            confidence_values.extend(source_confidence_values)
+
+        notes.sort(key=lambda note: note["onsetSeconds"])
+        stem_separation_used = any(stem_source in ("bass", "other") for stem_source in stems_transcribed)
+
+        if len(notes) == 0:
+            return {
+                "transcriptionDetail": {
+                    "transcriptionMethod": "basic-pitch",
+                    "noteCount": 0,
+                    "averageConfidence": 0.0,
+                    "dominantPitches": [],
+                    "pitchRange": {
+                        "minMidi": None,
+                        "maxMidi": None,
+                        "minName": None,
+                        "maxName": None,
+                    },
+                    "stemSeparationUsed": stem_separation_used,
+                    "stemsTranscribed": stems_transcribed,
+                    "notes": [],
+                }
+            }
+
+        dominant_pitches = [
+            {
+                "pitchMidi": int(pitch_midi),
+                "pitchName": midi_to_note_name(int(pitch_midi)),
+                "count": int(count),
+            }
+            for pitch_midi, count in Counter(midi_values).most_common(5)
+        ]
+
+        min_midi = int(min(midi_values))
+        max_midi = int(max(midi_values))
+        average_confidence = round(float(np.mean(np.asarray(confidence_values, dtype=np.float64))), 4)
+
+        return {
+            "transcriptionDetail": {
+                "transcriptionMethod": "basic-pitch",
+                "noteCount": int(len(notes)),
+                "averageConfidence": average_confidence,
+                "dominantPitches": dominant_pitches,
+                "pitchRange": {
+                    "minMidi": min_midi,
+                    "maxMidi": max_midi,
+                    "minName": midi_to_note_name(min_midi),
+                    "maxName": midi_to_note_name(max_midi),
+                },
+                "stemSeparationUsed": stem_separation_used,
+                "stemsTranscribed": stems_transcribed,
+                "notes": notes,
+            }
+        }
+    except Exception as e:
+        print(f"[warn] Basic Pitch transcription failed: {e}", file=sys.stderr)
+        return {"transcriptionDetail": None}
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: ./venv/bin/python analyze.py <audio_file> [--separate] [--fast]", file=sys.stderr)
+        print("Usage: ./venv/bin/python analyze.py <audio_file> [--separate] [--fast] [--transcribe] [--yes]", file=sys.stderr)
         sys.exit(1)
 
     audio_path = sys.argv[1]
@@ -2244,9 +2599,21 @@ def main():
     optional_args = sys.argv[2:]
     run_separation = "--separate" in optional_args
     run_fast = "--fast" in optional_args
+    run_transcribe = "--transcribe" in optional_args
+    auto_yes = "--yes" in optional_args
     # TODO: When enabled, use hopSize=4096 for frame-based algorithms except BPM/key.
     _ = run_fast
     stems = None
+
+    analysis_estimate = get_audio_duration_seconds(audio_path)
+    if analysis_estimate is not None:
+        estimate = build_analysis_estimate(analysis_estimate, run_separation, run_transcribe)
+        if sys.stdin.isatty():
+            print_analysis_estimate(audio_path, estimate)
+        if should_prompt_for_confirmation(sys.stdin.isatty(), auto_yes):
+            if not prompt_to_continue():
+                print("Analysis cancelled.", file=sys.stderr)
+                sys.exit(0)
 
     # Load audio
     print(f"Loading: {audio_path}", file=sys.stderr)
@@ -2365,6 +2732,21 @@ def main():
     # Essentia features
     result.update(analyze_essentia_features(mono))
 
+    # Optional Basic Pitch transcription pass
+    if run_transcribe:
+        transcription_stem_paths = None
+        if stems is not None:
+            transcription_stem_paths = {}
+            for stem_name in ("bass", "other"):
+                source_path = stems.get(stem_name)
+                if isinstance(source_path, str) and os.path.isfile(source_path):
+                    transcription_stem_paths[stem_name] = source_path
+            if len(transcription_stem_paths) == 0:
+                transcription_stem_paths = None
+        result.update(analyze_transcription_basic_pitch(audio_path, stem_paths=transcription_stem_paths))
+    else:
+        result["transcriptionDetail"] = None
+
     # Build final output in the exact requested key order
     output = {
         "bpm": result.get("bpm"),
@@ -2387,6 +2769,7 @@ def main():
         "spectralDetail": result.get("spectralDetail"),
         "rhythmDetail": result.get("rhythmDetail"),
         "melodyDetail": result.get("melodyDetail"),
+        "transcriptionDetail": result.get("transcriptionDetail"),
         "grooveDetail": result.get("grooveDetail"),
         "sidechainDetail": result.get("sidechainDetail"),
         "effectsDetail": result.get("effectsDetail"),
