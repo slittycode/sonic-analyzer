@@ -4,6 +4,7 @@ All notable changes to `sonic-analyzer` are documented here in reverse chronolog
 
 ## Unreleased
 
+- Added raw `analyze.py` structural snapshot coverage using a generated short WAV fixture so the core DSP CLI has automated regression checks beyond the FastAPI wrapper contract tests.
 - Added `http://localhost:3100` and `http://127.0.0.1:3100` to the FastAPI CORS allowlist so the Playwright smoke harness can reach the backend from port 3100.
 
 ## v0.9.0
