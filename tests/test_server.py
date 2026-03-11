@@ -52,6 +52,14 @@ class ServerContractTests(unittest.TestCase):
         schema_name = schema_ref.split("/")[-1]
         return openapi["components"]["schemas"][schema_name]["properties"]
 
+    def test_resolve_server_port_defaults_to_8100(self) -> None:
+        with patch.dict(server.os.environ, {}, clear=True):
+            self.assertEqual(server.resolve_server_port(), 8100)
+
+    def test_resolve_server_port_uses_env_override(self) -> None:
+        with patch.dict(server.os.environ, {"SONIC_ANALYZER_PORT": "8456"}, clear=True):
+            self.assertEqual(server.resolve_server_port(), 8456)
+
     def test_analyze_endpoint_openapi_contract_exposes_separate_form_field(
         self,
     ) -> None:

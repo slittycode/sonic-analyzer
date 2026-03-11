@@ -23,6 +23,8 @@ ANALYZE_TIMEOUT_BUFFER_SECONDS = 15
 ERROR_PHASE_LOCAL_DSP = "phase1_local_dsp"
 ENGINE_VERSION = "analyze.py"
 MAX_SNIPPET_LENGTH = 2000
+DEFAULT_SERVER_HOST = "0.0.0.0"
+DEFAULT_SERVER_PORT = 8100
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -87,6 +89,17 @@ def _coerce_nullable_number(value: Any) -> float | None:
 
 def _current_time() -> datetime:
     return datetime.now()
+
+
+def resolve_server_port() -> int:
+    raw_value = os.getenv("SONIC_ANALYZER_PORT", str(DEFAULT_SERVER_PORT)).strip()
+    try:
+        port = int(raw_value)
+    except ValueError:
+        return DEFAULT_SERVER_PORT
+    if 0 < port <= 65535:
+        return port
+    return DEFAULT_SERVER_PORT
 
 
 def _elapsed_ms(started_at: datetime | None, ended_at: datetime | None) -> float:
@@ -664,4 +677,4 @@ async def analyze_audio(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("server:app", host=DEFAULT_SERVER_HOST, port=resolve_server_port(), reload=False)

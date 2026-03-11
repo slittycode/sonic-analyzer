@@ -4,6 +4,9 @@ All notable changes to `sonic-analyzer` are documented here in reverse chronolog
 
 ## Unreleased
 
+- Standardized the canonical local backend port on `8100` so it stays in sync with the UI's `3100` local-dev convention and the new workspace launcher flow.
+- Added a tracked backend-owned `scripts/dev.sh` launcher that starts the full local stack, overrides stale UI backend env values at runtime, and deprecates the unversioned workspace-root launcher flow.
+
 ## v0.10.0
 
 - Added raw `analyze.py` structural snapshot coverage using a generated short WAV fixture so the core DSP CLI has automated regression checks beyond the FastAPI wrapper contract tests.

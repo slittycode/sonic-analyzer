@@ -31,6 +31,7 @@ python3 -m venv venv
 
 ## Main Commands
 
+- Preferred synced local stack from this repo: `./scripts/dev.sh`
 - Run the CLI analyzer:
 
 ```bash
@@ -43,8 +44,10 @@ python3 -m venv venv
 ./venv/bin/python server.py
 ```
 
-- The server currently binds to `0.0.0.0:8000`.
-- The UI expects the backend at `http://localhost:8000` unless overridden.
+- The server currently binds to `0.0.0.0:8100` by default and honors `SONIC_ANALYZER_PORT`.
+- The UI expects the backend at `http://127.0.0.1:8100` unless overridden.
+- `./scripts/dev.sh` starts the sibling `../sonic-analyzer-UI` checkout on `http://127.0.0.1:3100` and overrides stale UI `.env` backend URLs for that session.
+- The workspace-root `../scripts/dev.sh` flow is deprecated because it is not version-controlled in either repo.
 
 ## Validation Commands
 

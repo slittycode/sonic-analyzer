@@ -82,14 +82,42 @@ Notable top-level sections include:
 
 ## Running the HTTP Server
 
+Recommended synced launcher from this backend repo:
+
 ```bash
-./venv/bin/python server.py
+cd /Users/christiansmith/code/projects/sonic-analyzer-workspace/sonic-analyzer
+./scripts/dev.sh
+```
+
+This tracked launcher starts the backend on `http://127.0.0.1:8100`, waits for the FastAPI contract to come up, then starts the sibling UI on `http://127.0.0.1:3100` with `VITE_API_BASE_URL=http://127.0.0.1:8100`.
+
+If `../sonic-analyzer-UI/.env` still contains `http://localhost:8000`, the launcher prints a warning and overrides it for that session so the UI does not hit the dashboard service by mistake.
+
+The older workspace-root `./scripts/dev.sh` flow is deprecated because it is not version-controlled in either repo.
+
+Manual backend command:
+
+```bash
+SONIC_ANALYZER_PORT=8100 ./venv/bin/python server.py
+```
+
+Manual full-stack pair:
+
+```bash
+SONIC_ANALYZER_PORT=8100 ./venv/bin/python server.py
+cd ../sonic-analyzer-UI && VITE_API_BASE_URL=http://127.0.0.1:8100 npm run dev:local
+```
+
+Override the port when needed:
+
+```bash
+SONIC_ANALYZER_PORT=8456 ./venv/bin/python server.py
 ```
 
 Current bind:
 
 - host: `0.0.0.0`
-- port: `8000`
+- port: `8100` by default, or `SONIC_ANALYZER_PORT` when set
 
 Current CORS allow list:
 
@@ -141,7 +169,7 @@ Current stage keys returned by the server:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8000/api/analyze/estimate" \
+curl -X POST "http://127.0.0.1:8100/api/analyze/estimate" \
   -F "track=@track.wav"
 ```
 
@@ -246,7 +274,7 @@ Raw `analyze.py` fields that are not included in the HTTP `phase1` wrapper today
 Example:
 
 ```bash
-curl -X POST "http://localhost:8000/api/analyze" \
+curl -X POST "http://127.0.0.1:8100/api/analyze" \
   -F "track=@track.wav" \
   -F "transcribe=true"
 ```
